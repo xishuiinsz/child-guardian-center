@@ -4,7 +4,14 @@
     "src/renderer/src/env.d.ts",
     "src/renderer/src/**/*",
     "src/renderer/src/**/*.tsx",
-    "src/preload/*.d.ts"
+    "src/preload/*.d.ts",
+    // 渲染层通过 @utils/* 引用的共享代码（如 src/utils/const.ts）。
+    // 本项目开了 composite，TS 要求「所有实现文件都被 include/files 列出」，
+    // 只靠 import 拉进程序会报 TS6307（命令行的 --composite false 会掩盖它，IDE 不会）。
+    "src/utils/**/*",
+    // index.ts 是主进程专用工具层：依赖 node:child_process / node:fs 与 powershell 包
+    // （类型声明在 src/types/powershell.d.ts，同样不属于 web 程序），渲染进程用不到也不能用。
+    "!src/utils/index.ts"
   ],
   "compilerOptions": {
     "composite": true,
@@ -13,6 +20,12 @@
     "paths": {
       "@renderer/*": [
         "src/renderer/src/*"
+      ],
+      "@preload/*": [
+        "src/preload/*"
+      ],
+      "@utils/*": [
+        "src/utils/*"
       ]
     }
   }

@@ -1,0 +1,21 @@
+# 换行符策略：仓库内与工作区一律 LF。
+#
+# 为什么必须显式声明：本仓库 core.autocrlf=true，签出时会把 LF 换成 CRLF 写进工作区，
+# 而 .editorconfig 要求 end_of_line = lf、prettier 会据此校验，
+# 于是每个文件都被刷上一屏 `Delete ␍`（prettier/prettier）警告，且改完还会复发。
+# .gitattributes 的优先级高于 core.autocrlf，在这里定死才能根治。
+* text=auto eol=lf
+
+# PowerShell 脚本是交给外部 powershell.exe 执行的运行时资源（不参与 vite 打包），
+# 保留 CRLF：Windows PowerShell 5.1 对 LF 换行的多行语句 / here-string 处理并不一致。
+*.ps1 text eol=crlf
+*.psm1 text eol=crlf
+
+# 二进制文件：绝不能被当成文本做换行转换，否则图标直接损坏。
+*.png binary
+*.ico binary
+*.icns binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary

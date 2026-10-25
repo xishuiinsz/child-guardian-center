@@ -124,6 +124,40 @@ code {
   background-color: var(--ev-button-alt-hover-bg);
 }
 
+.user-error {
+  margin-top: 12px;
+  font-size: 14px;
+  line-height: 20px;
+  color: #f48771;
+  max-width: 520px;
+  text-align: center;
+  word-break: break-all;
+}
+
+.user-list {
+  margin-top: 12px;
+  padding: 8px 0;
+  max-height: 400px;
+  overflow-y: auto;
+  min-width: 260px;
+  text-align: left;
+  font-size: 14px;
+  line-height: 24px;
+  color: var(--ev-c-text-1);
+  border-radius: 8px;
+  background-color: var(--color-background-mute);
+}
+
+.user-list li {
+  padding: 0 16px;
+}
+
+.user-list .user-id {
+  color: var(--ev-c-text-3);
+  font-family: 'Menlo', 'Lucida Console', monospace;
+  margin-right: 6px;
+}
+
 .versions {
   position: absolute;
   bottom: 30px;

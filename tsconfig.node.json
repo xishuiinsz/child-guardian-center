@@ -1,8 +1,25 @@
 {
   "extends": "@electron-toolkit/tsconfig/tsconfig.node.json",
-  "include": ["electron.vite.config.*", "src/main/**/*", "src/preload/**/*"],
+  // src/utils：主进程专用工具层（index.ts 被 src/main/index.ts 引用），const.ts 里的默认值主进程也要用。
+  // src/types：powershell 包的补充声明，显式列出比依赖 import 链更稳。
+  // 同样因为开了 composite，只靠 import 拉进程序会在 IDE 里报 TS6307。
+  "include": [
+    "electron.vite.config.*",
+    "src/main/**/*",
+    "src/preload/**/*",
+    "src/utils/**/*",
+    "src/types/**/*"
+  ],
   "compilerOptions": {
     "composite": true,
-    "types": ["electron-vite/node"]
+    "types": ["electron-vite/node"],
+    // src/main/index.ts 用 `import type { UserInfo } from '@preload/ipc'` 引用 IPC 契约类型。
+    // 别名必须在这里重复声明一份：tsconfig.web.json 的 paths 只对 web 程序生效，
+    // node 程序（tsc -p tsconfig.node.json）看不到，否则报 TS2307 Cannot find module '@preload/ipc'。
+    "baseUrl": ".",
+    "paths": {
+      "@preload/*": ["src/preload/*"],
+      "@utils/*": ["src/utils/*"]
+    }
   }
 }
