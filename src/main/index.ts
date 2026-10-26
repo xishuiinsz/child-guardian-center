@@ -1,40 +1,32 @@
 import { electronApp, is, optimizer } from '@electron-toolkit/utils'
 import type { UserInfo } from '@preload/ipc'
-import { app, BrowserWindow, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, ipcMain, powerMonitor, shell } from 'electron'
 import Store from 'electron-store'
 import { join } from 'path'
 import icon from '../../resources/icon.png?asset'
-import { durationConfigInit } from '../utils/const'
-import type { LocalUser } from '../utils/index'
-import {  getLocalUsers, parseSidRid, toErrorMessage } from '@utils/index'
+import { delay, durationConfigInit } from '@utils/const'
+import type { LocalUser, UserTiming } from '@utils/index'
+import { getLocalUsers, lockScreen, parseSidRid, StatusEnum, toErrorMessage } from '@utils/index'
 import os from 'node:os'
 
 const { username } = os.userInfo()
 console.log(username) // Kai Zhang（Windows 登录账户名）
 
-/**
- * electron-store 里按用户名存的那份时长配置。
- *
- * 只存这两项：name / sid / lastLogon 这些每次采集都是最新的，没必要也不该落库。
- * 字段声明成可选是因为旧数据可能缺项，读出来一律由 toUserInfo 用出厂默认值兜底。
- */
+const cachedData: {
+  timer: null | NodeJS.Timeout
+  mainWindow: BrowserWindow | null
+  screenStatus: 'lock' | 'unlock' | null
+} = {
+  timer: null,
+  mainWindow: null,
+  screenStatus: null
+}
+
 interface StoredDurationConfig {
   allowedDuration?: number
   disabledTimes?: number
 }
 
-/**
- * LocalUser（采集层结构）→ UserInfo（IPC 契约，见 src/preload/ipc.d.ts）。
- *
- * 必须显式构造，不能用原来的 `Object.assign(user, userSettings)`：
- * 1. LocalUser 里根本没有 id 字段，assign 之后 UserInfo.id 依然是 undefined。
- *    而渲染层 App.tsx 的 change() 靠 `prevUser.id === data.id` 定位要改哪一行 ——
- *    id 全是 undefined 时这个判断恒为 true，改任意一个输入框会把所有用户一起改掉；
- *    `key={user.id || user.name}` 也会退化成用 name 当 key（同名账户 / 排序变化时不可靠）。
- *    这里用 parseSidRid(user.sid) 取 SID 末段 RID，稳定且唯一。
- * 2. assign 是原地改采集层对象，TS 推不出结果类型，返回 LocalUser[] 会报 TS2322
- *    （LocalUser 缺 id / allowedDuration / disabledTimes）。
- */
 const toUserInfo = (user: LocalUser, stored: StoredDurationConfig): UserInfo => ({
   id: parseSidRid(user.sid),
   name: user.name,
@@ -45,7 +37,7 @@ const toUserInfo = (user: LocalUser, stored: StoredDurationConfig): UserInfo => 
 
 function createWindow(): void {
   // Create the browser window.
-  const mainWindow = new BrowserWindow({
+  cachedData.mainWindow = new BrowserWindow({
     width: 900,
     height: 670,
     show: false,
@@ -57,25 +49,25 @@ function createWindow(): void {
     }
   })
 
-  mainWindow.on('ready-to-show', () => {
-    mainWindow.show()
+  cachedData.mainWindow.on('ready-to-show', () => {
+    cachedData.mainWindow?.show()
   })
 
-  mainWindow.webContents.setWindowOpenHandler((details) => {
+  cachedData.mainWindow.webContents.setWindowOpenHandler((details) => {
     shell.openExternal(details.url)
     return { action: 'deny' }
   })
 
   if (!app.isPackaged) {
-    mainWindow.webContents.openDevTools({ mode: 'right' })
+    cachedData.mainWindow.webContents.openDevTools({ mode: 'right' })
   }
 
   // HMR for renderer base on electron-vite cli.
   // Load the remote URL for development or the local html file for production.
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
-    mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
+    cachedData.mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
   } else {
-    mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
+    cachedData.mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
   }
 }
 
@@ -85,12 +77,54 @@ const store = new Store({
   name: 'userConfig' // 最终文件为 userConfig.json
 })
 
+const getInitUserTiming = (): UserTiming => {
+  const nowTime = Date.now()
+  const data: UserTiming = {
+    allowedDuration: 2 * 60 * 1000,
+    disabledTimes: 2,
+    startTime: nowTime,
+    endTime: nowTime,
+    status: StatusEnum.available
+  }
+  return data
+}
+const userTiming: UserTiming = getInitUserTiming()
+
+const overTimeCheck = (data: UserTiming): void => {
+  const { status, startTime, endTime, allowedDuration, disabledTimes } = data
+  const diffTime = endTime - startTime
+  const nowTime = Date.now()
+  if (status === StatusEnum.available) {
+    if (diffTime > allowedDuration) {
+      Object.assign(userTiming, {
+        status: StatusEnum.disabled,
+        startTime: nowTime,
+        endTime: nowTime
+      })
+      lockScreen()
+      return
+    }
+  }
+  if (status === StatusEnum.disabled) {
+    if (diffTime > allowedDuration * disabledTimes) {
+      Object.assign(userTiming, {
+        status: StatusEnum.available,
+        startTime: nowTime,
+        endTime: nowTime
+      })
+    }
+  }
+  setTimeout(overTimeCheck, delay, userTiming)
+}
+
 // This method will be called when Electron has finished
 // initialization and is ready to create browser windows.
 // Some APIs can only be used after this event occurs.
 app.whenReady().then(() => {
   // Set app user model id for windows
   electronApp.setAppUserModelId('com.electron')
+
+  overTimeCheck(userTiming)
 
   // Default open or close DevTools by F12 in development
   // and ignore CommandOrControl + R in production.
@@ -133,6 +167,28 @@ app.whenReady().then(() => {
     // dock icon is clicked and there are no other windows open.
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
+
+  const monitorUnlockScreen = (): void => {
+    powerMonitor.on('unlock-screen', () => {
+      cachedData.screenStatus = 'unlock'
+      overTimeCheck(userTiming)
+      powerMonitor.removeAllListeners('lock-screen')
+    })
+  }
+
+  const monitorLockScreen = (): void => {
+    powerMonitor.on('lock-screen', () => {
+      monitorUnlockScreen()
+      cachedData.screenStatus = 'lock'
+      if (userTiming.status === StatusEnum.available) {
+        cachedData.timer && clearInterval(cachedData.timer)
+      }
+      powerMonitor.removeAllListeners('lock-screen')
+      setTimeout(monitorLockScreen, 1 * 1000)
+    })
+  }
+
+  monitorLockScreen()
 })
 
 // Quit when all windows are closed, except on macOS. There, it's common

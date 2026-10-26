@@ -11,3 +11,5 @@ export const durationConfigInit = {
   allowedDuration: 60 * 60, // 1 hour in milliseconds
   disabledTimes: 2 // 2 hours in milliseconds
 }
+
+export const delay = 1 * 1000

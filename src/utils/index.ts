@@ -2,22 +2,23 @@ import { execFile } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { isAbsolute, join, normalize, sep } from 'node:path'
 import PowerShell from 'powershell'
+import { spawn } from 'node:child_process'
 
-/**
- * 与 Electron 无关的工具层：只做「跑 PowerShell + 解析输出」这类逻辑，
- * 从 main/main.ts 剥离出来，方便复用与单独验证（main.ts 只保留生命周期 / 窗口 / IPC）。
- *
- * 注意路径基准：本文件不是被 tsc 单独输出成 dist/utils/index.js，而是被 electron-vite
- * **打包进 out/main/index.js**，所以运行时 __dirname 恒为 out/main：
- * 开发态是 `<项目根>/out/main`，安装后是 `<安装目录>/resources/app.asar/out/main`。
- * 「从产物往回找包根」一律是往上两级（main/index.ts 里的 ../preload、../renderer 同理）。
- */
+export type UserTimingStatus = 'available' | 'disabled'
 
-/**
- * ps 脚本目录（资源目录形态）：脚本是交给外部 powershell.exe 读的运行时资源，不参与编译，
- * 所以放在 resources/ps 下 —— electron-builder.yml 的 `asarUnpack: resources/**` 会把它
- * 解包到 app.asar.unpacked；留在 asar 里的话外部进程根本读不到，打包后必然失败。
- */
+export enum StatusEnum {
+  available = 'available',
+  disabled = 'disabled'
+}
+
+export interface UserTiming {
+  status: StatusEnum
+  allowedDuration: number
+  disabledTimes: number
+  startTime: number
+  endTime: number
+}
+
 const PS_DIR_RESOURCES = join(__dirname, '..', '..', 'resources', 'ps')
 /** 安装态：把 asar 内路径换成 electron-builder 解包后的真实磁盘路径（路径里没有 app.asar 时原样返回） */
 const PS_DIR_UNPACKED = PS_DIR_RESOURCES.replace(
@@ -346,4 +347,12 @@ export async function getLocalUsers(): Promise<LocalUser[]> {
       cause: error
     })
   }
+}
+
+export function lockScreen(): void {
+  spawn('rundll32.exe', ['user32.dll,LockWorkStation'], {
+    windowsHide: true,
+    detached: true, // 立即脱离，不等它返回
+    stdio: 'ignore'
+  }).unref()
 }
