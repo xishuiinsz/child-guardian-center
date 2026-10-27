@@ -6,7 +6,14 @@ import { join } from 'path'
 import icon from '../../resources/icon.png?asset'
 import { delay, durationConfigInit } from '@utils/const'
 import type { LocalUser, UserTiming } from '@utils/index'
-import { getLocalUsers, lockScreen, parseSidRid, StatusEnum, toErrorMessage } from '@utils/index'
+import {
+  getLocalUsers,
+  isSameDate,
+  lockScreen,
+  parseSidRid,
+  StatusEnum,
+  toErrorMessage
+} from '@utils/index'
 import os from 'node:os'
 
 const { username } = os.userInfo()
@@ -90,10 +97,14 @@ const getInitUserTiming = (): UserTiming => {
 }
 const userTiming: UserTiming = getInitUserTiming()
 
-const overTimeCheck = (data: UserTiming): void => {
-  const { status, startTime, endTime, allowedDuration, disabledTimes } = data
-  const diffTime = endTime - startTime
+const overTimeCheck = (params: UserTiming): void => {
   const nowTime = Date.now()
+  const data = { ...params, endTime: nowTime }
+  const { status, startTime, endTime, allowedDuration, disabledTimes } = data
+
+  const diffTime = endTime - startTime
+
+  // 当前状态为：可用
   if (status === StatusEnum.available) {
     if (diffTime > allowedDuration) {
       Object.assign(userTiming, {
@@ -102,18 +113,16 @@ const overTimeCheck = (data: UserTiming): void => {
         endTime: nowTime
       })
       lockScreen()
-      return
     }
   }
+
+  // 当前状态为：禁用
   if (status === StatusEnum.disabled) {
-    if (diffTime > allowedDuration * disabledTimes) {
-      Object.assign(userTiming, {
-        status: StatusEnum.available,
-        startTime: nowTime,
-        endTime: nowTime
-      })
+    if (diffTime < allowedDuration * disabledTimes) {
+      lockScreen()
     }
   }
+
   setTimeout(overTimeCheck, delay, userTiming)
 }
 

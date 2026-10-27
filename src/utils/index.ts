@@ -356,3 +356,20 @@ export function lockScreen(): void {
     stdio: 'ignore'
   }).unref()
 }
+
+export const getYearMonthDay = (value: unknown = Date.now()) => {
+  if (value instanceof Date || typeof value === 'number') {
+    return new Date(value).toLocaleDateString()
+  }
+  return value
+}
+
+export const isSameDate = (val1: unknown, val2: unknown) => {
+  if (
+    (val1 instanceof Date || typeof val1 === 'number') &&
+    (val2 instanceof Date || typeof val2 === 'number')
+  ) {
+    return new Date(val1).toLocaleDateString() === new Date(val2).toLocaleDateString()
+  }
+  return false
+}
