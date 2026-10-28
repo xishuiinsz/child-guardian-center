@@ -13,10 +13,8 @@ export enum StatusEnum {
 
 export interface UserTiming {
   status: StatusEnum
-  allowedDuration: number
-  disabledTimes: number
-  startTime: number
-  endTime: number
+  lastTime: number
+  countdown: number
 }
 
 const PS_DIR_RESOURCES = join(__dirname, '..', '..', 'resources', 'ps')

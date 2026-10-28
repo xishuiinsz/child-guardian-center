@@ -8,7 +8,7 @@
  * 接了本地存储 / 后端之后，应改成按用户维度读取，本文件只保留出厂默认值。
  */
 export const durationConfigInit = {
-  allowedDuration: 60 * 60, // 1 hour in milliseconds
+  allowedDuration: 2 * 60 * 1000, // 1 hour in milliseconds
   disabledTimes: 2 // 2 hours in milliseconds
 }
 

@@ -1,30 +1,25 @@
 import { electronApp, is, optimizer } from '@electron-toolkit/utils'
 import type { UserInfo } from '@preload/ipc'
-import { app, BrowserWindow, ipcMain, powerMonitor, shell } from 'electron'
-import Store from 'electron-store'
-import { join } from 'path'
-import icon from '../../resources/icon.png?asset'
 import { delay, durationConfigInit } from '@utils/const'
 import type { LocalUser, UserTiming } from '@utils/index'
-import {
-  getLocalUsers,
-  isSameDate,
-  lockScreen,
-  parseSidRid,
-  StatusEnum,
-  toErrorMessage
-} from '@utils/index'
+import { getLocalUsers, lockScreen, parseSidRid, StatusEnum, toErrorMessage } from '@utils/index'
+import { app, BrowserWindow, ipcMain, powerMonitor, shell } from 'electron'
+import Store from 'electron-store'
 import os from 'node:os'
+import { join } from 'path'
+import icon from '../../resources/icon.png?asset'
 
 const { username } = os.userInfo()
 console.log(username) // Kai Zhang（Windows 登录账户名）
 
 const cachedData: {
   timer: null | NodeJS.Timeout
+  polling: boolean
   mainWindow: BrowserWindow | null
   screenStatus: 'lock' | 'unlock' | null
 } = {
   timer: null,
+  polling: true,
   mainWindow: null,
   screenStatus: null
 }
@@ -87,43 +82,38 @@ const store = new Store({
 const getInitUserTiming = (): UserTiming => {
   const nowTime = Date.now()
   const data: UserTiming = {
-    allowedDuration: 2 * 60 * 1000,
-    disabledTimes: 2,
-    startTime: nowTime,
-    endTime: nowTime,
-    status: StatusEnum.available
+    lastTime: nowTime,
+    status: StatusEnum.available,
+    countdown: durationConfigInit.allowedDuration
   }
   return data
 }
+
 const userTiming: UserTiming = getInitUserTiming()
 
-const overTimeCheck = (params: UserTiming): void => {
-  const nowTime = Date.now()
-  const data = { ...params, endTime: nowTime }
-  const { status, startTime, endTime, allowedDuration, disabledTimes } = data
-
-  const diffTime = endTime - startTime
-
-  // 当前状态为：可用
-  if (status === StatusEnum.available) {
-    if (diffTime > allowedDuration) {
+const overTimeCheck = () => {
+  userTiming.countdown -= delay
+  if (userTiming.status === StatusEnum.available) {
+    if (userTiming.countdown < 0) {
       Object.assign(userTiming, {
         status: StatusEnum.disabled,
-        startTime: nowTime,
-        endTime: nowTime
+        countdown: durationConfigInit.allowedDuration * durationConfigInit.disabledTimes
       })
       lockScreen()
     }
-  }
-
-  // 当前状态为：禁用
-  if (status === StatusEnum.disabled) {
-    if (diffTime < allowedDuration * disabledTimes) {
-      lockScreen()
+  } else if (userTiming.status === StatusEnum.disabled) {
+    if (userTiming.countdown < 0) {
+      Object.assign(userTiming, {
+        status: StatusEnum.available,
+        countdown: durationConfigInit.allowedDuration
+      })
     }
   }
-
-  setTimeout(overTimeCheck, delay, userTiming)
+  if (cachedData.polling) {
+    cachedData.timer = setTimeout(overTimeCheck, delay)
+  } else {
+    cachedData.timer && clearTimeout(cachedData.timer)
+  }
 }
 
 // This method will be called when Electron has finished
@@ -133,7 +123,7 @@ app.whenReady().then(() => {
   // Set app user model id for windows
   electronApp.setAppUserModelId('com.electron')
 
-  overTimeCheck(userTiming)
+  overTimeCheck()
 
   // Default open or close DevTools by F12 in development
   // and ignore CommandOrControl + R in production.
@@ -161,13 +151,7 @@ app.whenReady().then(() => {
 
   // 第一个参数是 IpcMainInvokeEvent，这里用不到；必须写出来占位才能拿到第二个参数 payload。
   // 加下划线前缀是 TS 的约定：noUnusedParameters 会跳过以 `_` 开头的形参，否则报 TS6133。
-  ipcMain.handle('user:data', async (_event, payload) => {
-    const user = payload.name.replace(' ', '')
-    const allowedDuration = payload.allowedDuration ?? durationConfigInit.allowedDuration
-    const disabledTimes = payload.disabledTimes ?? durationConfigInit.disabledTimes
-    store.set(`${user}.allowedDuration`, parseInt(allowedDuration))
-    store.set(`${user}.disabledTimes`, parseInt(disabledTimes))
-  })
+  ipcMain.handle('user:data', async (_event, payload) => {})
 
   createWindow()
 
@@ -189,11 +173,8 @@ app.whenReady().then(() => {
     powerMonitor.on('lock-screen', () => {
       monitorUnlockScreen()
       cachedData.screenStatus = 'lock'
-      if (userTiming.status === StatusEnum.available) {
-        cachedData.timer && clearInterval(cachedData.timer)
-      }
       powerMonitor.removeAllListeners('lock-screen')
-      setTimeout(monitorLockScreen, 1 * 1000)
+      setTimeout(monitorLockScreen, delay)
     })
   }
 
