@@ -16,12 +16,10 @@ const cachedData: {
   timer: null | NodeJS.Timeout
   polling: boolean
   mainWindow: BrowserWindow | null
-  screenStatus: 'lock' | 'unlock' | null
 } = {
   timer: null,
   polling: true,
-  mainWindow: null,
-  screenStatus: null
+  mainWindow: null
 }
 
 interface StoredDurationConfig {
@@ -123,14 +121,14 @@ app.whenReady().then(() => {
   // Set app user model id for windows
   electronApp.setAppUserModelId('com.electron')
 
-  overTimeCheck()
-
   // Default open or close DevTools by F12 in development
   // and ignore CommandOrControl + R in production.
   // see https://github.com/alex8088/electron-toolkit/tree/master/packages/utils
   app.on('browser-window-created', (_, window) => {
     optimizer.watchWindowShortcuts(window)
   })
+
+  overTimeCheck()
 
   // IPC：user:list 必须用 handle/invoke 这一对。
   // ipcMain.on + event.reply 只能「再发一条消息」，on 回调里的 return 会被 Electron 丢弃；
@@ -161,24 +159,26 @@ app.whenReady().then(() => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
 
-  const monitorUnlockScreen = (): void => {
-    powerMonitor.on('unlock-screen', () => {
-      cachedData.screenStatus = 'unlock'
-      overTimeCheck(userTiming)
-      powerMonitor.removeAllListeners('lock-screen')
-    })
-  }
+  // 锁屏/解锁监听器只在 app ready 时注册一次，绝不要把 powerMonitor.on(...) 写进
+  // 会被反复调用的函数里（或在事件回调里再 on()），否则监听器会累积：
+  // 一次锁屏/解锁会触发 N 个回调（打印 N 次、overTimeCheck 被启动 N 次）。
+  // 注意 Node 的 EventEmitter 在 emit 时会先复制监听器数组，回调里再 removeAllListeners
+  // 也拦不住本次 emit 的其余回调，所以「先摘后挂」的写法在这里同样不可靠。
+  powerMonitor.on('lock-screen', () => {
+    console.log('lock-screen')
+    cachedData.polling = false // 锁屏期间暂停计时
+    if (cachedData.timer) clearTimeout(cachedData.timer)
+    cachedData.timer = null
+  })
 
-  const monitorLockScreen = (): void => {
-    powerMonitor.on('lock-screen', () => {
-      monitorUnlockScreen()
-      cachedData.screenStatus = 'lock'
-      powerMonitor.removeAllListeners('lock-screen')
-      setTimeout(monitorLockScreen, delay)
-    })
-  }
-
-  monitorLockScreen()
+  powerMonitor.on('unlock-screen', () => {
+    console.log('unlock-screen')
+    // 幂等：即使解锁事件重复到达，也只会恢复一条计时链
+    if (!cachedData.polling) {
+      cachedData.polling = true
+      overTimeCheck()
+    }
+  })
 })
 
 // Quit when all windows are closed, except on macOS. There, it's common
