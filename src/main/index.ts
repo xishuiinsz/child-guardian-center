@@ -97,7 +97,7 @@ const clearTimer = () => {
 const overTimeCheck = () => {
   userTiming.countdown -= delay
   userTiming.lastTime = Date.now()
-  console.count('overTimeCheck')
+  console.log('userTiming: ', userTiming.status, userTiming.countdown / 1000)
   if (userTiming.countdown <= 0) {
     if (userTiming.status === StatusEnum.available) {
       Object.assign(userTiming, {
@@ -179,6 +179,7 @@ app.whenReady().then(() => {
 
   powerMonitor.on('unlock-screen', () => {
     console.log('unlock-screen')
+    clearTimer()
     overTimeCheck()
   })
 })
