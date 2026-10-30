@@ -14,11 +14,9 @@ console.log(username) // Kai Zhang（Windows 登录账户名）
 
 const cachedData: {
   timer: null | NodeJS.Timeout
-  polling: boolean
   mainWindow: BrowserWindow | null
 } = {
   timer: null,
-  polling: true,
   mainWindow: null
 }
 
@@ -89,29 +87,38 @@ const getInitUserTiming = (): UserTiming => {
 
 const userTiming: UserTiming = getInitUserTiming()
 
+const clearTimer = () => {
+  if (cachedData.timer) {
+    clearTimeout(cachedData.timer)
+    cachedData.timer = null
+  }
+}
+
 const overTimeCheck = () => {
   userTiming.countdown -= delay
-  if (userTiming.status === StatusEnum.available) {
-    if (userTiming.countdown < 0) {
+  userTiming.lastTime = Date.now()
+  console.count('overTimeCheck')
+  if (userTiming.countdown <= 0) {
+    if (userTiming.status === StatusEnum.available) {
       Object.assign(userTiming, {
         status: StatusEnum.disabled,
         countdown: durationConfigInit.allowedDuration * durationConfigInit.disabledTimes
       })
       lockScreen()
-    }
-  } else if (userTiming.status === StatusEnum.disabled) {
-    if (userTiming.countdown < 0) {
+    } else {
+      clearTimer()
       Object.assign(userTiming, {
         status: StatusEnum.available,
         countdown: durationConfigInit.allowedDuration
       })
     }
-  }
-  if (cachedData.polling) {
-    cachedData.timer = setTimeout(overTimeCheck, delay)
   } else {
-    cachedData.timer && clearTimeout(cachedData.timer)
+    if (userTiming.status === StatusEnum.disabled) {
+      lockScreen()
+    }
   }
+
+  cachedData.timer = setTimeout(overTimeCheck, delay)
 }
 
 // This method will be called when Electron has finished
@@ -165,19 +172,14 @@ app.whenReady().then(() => {
   // 注意 Node 的 EventEmitter 在 emit 时会先复制监听器数组，回调里再 removeAllListeners
   // 也拦不住本次 emit 的其余回调，所以「先摘后挂」的写法在这里同样不可靠。
   powerMonitor.on('lock-screen', () => {
-    console.log('lock-screen')
-    cachedData.polling = false // 锁屏期间暂停计时
-    if (cachedData.timer) clearTimeout(cachedData.timer)
-    cachedData.timer = null
+    if (userTiming.status === StatusEnum.available) {
+      clearTimer()
+    }
   })
 
   powerMonitor.on('unlock-screen', () => {
     console.log('unlock-screen')
-    // 幂等：即使解锁事件重复到达，也只会恢复一条计时链
-    if (!cachedData.polling) {
-      cachedData.polling = true
-      overTimeCheck()
-    }
+    overTimeCheck()
   })
 })
 

@@ -1,6 +1,8 @@
 # child-guardian-center
 
-An Electron application with React and TypeScript
+## 核心需求
+- 本程序的目标是管控作为普通用户的孩童单次使用电脑的时长，并强制休息数倍于使用电脑时长的时间。
+- 
 
 ## Recommended IDE Setup
 
