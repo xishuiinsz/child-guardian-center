@@ -1,10 +1,9 @@
 import { electronApp, is, optimizer } from '@electron-toolkit/utils'
 import type { UserInfo } from '@preload/ipc'
 import { delay, durationConfigInit } from '@utils/const'
-import type { LocalUser, UserTiming } from '@utils/index'
-import { getLocalUsers, lockScreen, parseSidRid, StatusEnum, toErrorMessage } from '@utils/index'
+import type { UserTiming } from '@utils/index'
+import { lockScreen, StatusEnum } from '@utils/index'
 import { app, BrowserWindow, ipcMain, powerMonitor, shell } from 'electron'
-import Store from 'electron-store'
 import os from 'node:os'
 import { join } from 'path'
 import icon from '../../resources/icon.png?asset'
@@ -19,19 +18,6 @@ const cachedData: {
   timer: null,
   mainWindow: null
 }
-
-interface StoredDurationConfig {
-  allowedDuration?: number
-  disabledTimes?: number
-}
-
-const toUserInfo = (user: LocalUser, stored: StoredDurationConfig): UserInfo => ({
-  id: parseSidRid(user.sid),
-  name: user.name,
-  isAdmin: user.isAdmin,
-  allowedDuration: stored.allowedDuration ?? durationConfigInit.allowedDuration,
-  disabledTimes: stored.disabledTimes ?? durationConfigInit.disabledTimes
-})
 
 function createWindow(): void {
   // Create the browser window.
@@ -68,12 +54,6 @@ function createWindow(): void {
     cachedData.mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
   }
 }
-
-const store = new Store({
-  // 指定子目录，避免与 Chromium 目录冲突
-  cwd: 'app-config',
-  name: 'userConfig' // 最终文件为 userConfig.json
-})
 
 const getInitUserTiming = (): UserTiming => {
   const nowTime = Date.now()
@@ -142,16 +122,8 @@ app.whenReady().then(() => {
   // 渲染进程 await ipcRenderer.invoke('user:list') 才能拿到这里的返回值（Promise）。
   // 若这里 throw，渲染进程的 invoke 会以 rejection 形式抛出，可直接 try/catch。
   ipcMain.handle('user:list', async (): Promise<UserInfo[]> => {
-    try {
-      const users = await getLocalUsers()
-      const userConfig = store.store as Record<string, StoredDurationConfig | undefined>
-      return users.map((user) => toUserInfo(user, userConfig[user.name.replace(' ', '')] ?? {}))
-    } catch (error) {
-      const message = toErrorMessage(error)
-      console.error('[user:get-list] 采集失败:', message)
-      // 挂上 cause：渲染进程只拿到 message，主进程日志里还能顺着 cause 看到原始堆栈
-      throw new Error(message, { cause: error })
-    }
+    // 迭代一暂不实现 store.get()，直接返回默认值。
+    return []
   })
 
   // 第一个参数是 IpcMainInvokeEvent，这里用不到；必须写出来占位才能拿到第二个参数 payload。
@@ -184,6 +156,10 @@ app.whenReady().then(() => {
     console.log('unlock-screen')
     clearTimer()
     overTimeCheck()
+  })
+
+  powerMonitor.on('suspend', () => {
+    console.log('开始休眠')
   })
 })
 
