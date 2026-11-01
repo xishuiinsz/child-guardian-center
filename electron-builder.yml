@@ -5,6 +5,13 @@ directories:
 files:
   - '!**/.vscode/*'
   - '!src/*'
+  # scripts/ 是构建期工具（install-app.mjs / setup-task.ps1），运行时不需要，别塞进 asar
+  - '!scripts/*'
+  # 日志绝不能进 asar：electron-builder 是「先枚举算偏移、再逐个写内容」，
+  # 若构建过程中项目目录里有文件在持续增长（例如把构建输出重定向到项目内的 build.log），
+  # 其后所有文件的偏移都会错位，产出一个「能列出目录、但读出来是别的文件内容」的坏 asar，
+  # 表现为打包后的 exe 启动即退出（exit 1）且没有任何输出。构建日志请写到项目目录之外。
+  - '!**/*.log'
   - '!electron.vite.config.{js,ts,mjs,cjs}'
   - '!{.eslintcache,eslint.config.mjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}'
   - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
@@ -18,6 +25,19 @@ nsis:
   shortcutName: ${productName}
   uninstallDisplayName: ${productName}
   createDesktopShortcut: always
+# 便携版：README「打包要求」要的「单一 .exe」只能走这个目标。
+# Electron 应用无法编译成真·单文件（必须携带 Chromium 运行时），portable 是 NSIS 自解压外壳：
+# 启动时把整个应用解压到 %TEMP%\child-guardian-center，ExecWait 拉起真正的 exe，退出时再删掉该目录
+# （见 node_modules/app-builder-lib/templates/nsis/portable.nsi:38 与 :90）。
+# 构建命令：npm run build:portable（不改 win.target 的默认值，避免影响现有的 build:win）
+portable:
+  # 去掉版本号，产物名恒定 → 计划任务里写死的路径不会因为升级而失效
+  artifactName: ${name}.exe
+  # 固定解压目录名，便于排查（不配置时是构建期随机生成的 KSUID，%TEMP% 里看不出是哪个应用）
+  unpackDirName: child-guardian-center
+  # user：外壳自己不申请 UAC 提权。任务计划以「登录用户本人」身份运行时，
+  # 若这里设成 admin，孩子（标准用户）登录会弹凭据框，任务直接启动失败。
+  requestExecutionLevel: user
 mac:
   entitlementsInherit: build/entitlements.mac.plist
   extendInfo:

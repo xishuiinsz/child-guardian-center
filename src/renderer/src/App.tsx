@@ -130,8 +130,8 @@ function App(): React.JSX.Element {
           </a>
         </div>
         <div className="action">
-          <a target="_blank" rel="noreferrer">
-            编辑
+          <a target="_blank" rel="noreferrer" onClick={() => setEditable((prev) => !prev)}>
+            {editable ? '完成' : '编辑'}
           </a>
         </div>
       </div>

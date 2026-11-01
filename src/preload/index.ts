@@ -14,7 +14,7 @@ import type { Api, UserInfo } from './ipc'
 const api: Api = {
   /** 获取系统用户列表：对应主进程 ipcMain.handle('user:list') */
   getUserList: (): Promise<UserInfo[]> => ipcRenderer.invoke('user:list'),
-  setUerData: (p: UserInfo): Promise<boolean> => ipcRenderer.invoke('user:data', p),
+  setUerData: (p: UserInfo): Promise<boolean> => ipcRenderer.invoke('user:data', p)
 }
 
 // Use `contextBridge` APIs to expose Electron APIs to

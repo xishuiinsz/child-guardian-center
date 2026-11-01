@@ -156,9 +156,12 @@ app.whenReady().then(() => {
 
   // 第一个参数是 IpcMainInvokeEvent，这里用不到；必须写出来占位才能拿到第二个参数 payload。
   // 加下划线前缀是 TS 的约定：noUnusedParameters 会跳过以 `_` 开头的形参，否则报 TS6133。
-  ipcMain.handle('user:data', async (_event, payload) => {})
+  // ESLint 侧靠 eslint.config.mjs 里的 argsIgnorePattern: '^_' 放行，两边约定保持一致。
+  // payload 目前也用不到（store.set 落库还没接），故同样加前缀；接通后去掉下划线即可。
+  ipcMain.handle('user:data', async (_event, _payload) => {})
 
-  createWindow()
+  // 迭代一暂不实现客户端窗口
+  // createWindow()
 
   app.on('activate', function () {
     // On macOS it's common to re-create a window in the app when the
