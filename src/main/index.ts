@@ -91,6 +91,7 @@ const overTimeCheck = () => {
         status: StatusEnum.available,
         countdown: durationConfigInit.allowedDuration
       })
+      return
     }
   } else {
     if (userTiming.status === StatusEnum.disabled) {
