@@ -9,7 +9,7 @@ const store = new Store({
 export const timeRate = 60 * 1000 // 1分钟的毫秒数;
 
 export const durationConfigInit = {
-  allowedDuration: 2 * 60 * 1000,
+  allowedDuration: 2 * timeRate,
   disabledTimes: 2
 }
 
