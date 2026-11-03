@@ -69,6 +69,9 @@ const getInitUserTiming = (): UserTiming => {
 
 const userTiming: UserTiming = getInitUserTiming()
 
+console.log(userTiming);
+
+
 const clearTimer = (): void => {
   if (cachedData.timer) {
     clearTimeout(cachedData.timer)
