@@ -12,9 +12,11 @@ const { username } = os.userInfo()
 console.log(username) // Kai Zhang（Windows 登录账户名）
 
 const cachedData: {
+  isLocked: boolean
   timer: null | NodeJS.Timeout
   mainWindow: BrowserWindow | null
 } = {
+  isLocked: false,
   timer: null,
   mainWindow: null
 }
@@ -67,31 +69,48 @@ const getInitUserTiming = (): UserTiming => {
 
 const userTiming: UserTiming = getInitUserTiming()
 
-const clearTimer = () => {
+const clearTimer = (): void => {
   if (cachedData.timer) {
     clearTimeout(cachedData.timer)
     cachedData.timer = null
   }
 }
 
-const overTimeCheck = () => {
-  userTiming.countdown -= delay
-  userTiming.lastTime = Date.now()
-  console.log('userTiming: ', userTiming.status, userTiming.countdown / 1000)
+/**
+ * 计时主循环：按真实流逝时间扣减 -> 到点切状态 / 锁屏 -> 无条件续期。
+ *
+ * 三个不能改的点：
+ * 1. 扣减用 `now - lastTime` 而不是固定的 `delay`。setTimeout 本身不保证精度，
+ *    而且定时器在系统睡眠期间不触发，固定扣减会让孩子靠「让机器睡一会儿」把可用时长拖长。
+ * 2. 休息结束切回 available 之后必须继续排下一次定时器。历史版本在这里把 `polling`
+ *    置成 false，而全文件再没有一处把它改回 true，结果第一轮「可用 + 强制休息」跑完后
+ *    计时永久停摆，孩子此后可以无限期使用电脑。
+ * 3. 排定时器前先 clearTimer：这样任何路径重复调用本函数都不会叠出两个定时器。
+ */
+const overTimeCheck = (): void => {
+  const now = Date.now()
+  // Math.max 兜住系统时钟回拨（NTP 校时 / 夏令时），回拨时这一拍不扣而不是倒加时长
+  userTiming.countdown -= Math.max(0, now - userTiming.lastTime)
+  userTiming.lastTime = now
+
+  // 显示层取整，内部仍按毫秒精确记账：把 countdown 本身取整存回去，等于把定时器漂移又放回来。
+  // 用 ceil 而不是 round/floor —— 还剩 0.3s 时显示 1，不会出现「显示 0 秒却还能用」的矛盾。
+  console.log('userTiming: ', userTiming.status, Math.ceil(userTiming.countdown / 1000))
+
   if (userTiming.countdown <= 0) {
     if (userTiming.status === StatusEnum.available) {
+      // 可用时长耗尽 -> 进入强制休息，休息时长 = 可用时长 * 禁用倍数
       Object.assign(userTiming, {
         status: StatusEnum.disabled,
         countdown: durationConfigInit.allowedDuration * durationConfigInit.disabledTimes
       })
       lockScreen()
     } else {
-      clearTimer()
+      // 强制休息结束 -> 回到可用状态，开启下一轮循环（这里绝不能停表）
       Object.assign(userTiming, {
         status: StatusEnum.available,
         countdown: durationConfigInit.allowedDuration
       })
-      return
     }
   } else {
     if (userTiming.status === StatusEnum.disabled) {
@@ -99,7 +118,27 @@ const overTimeCheck = () => {
     }
   }
 
+  clearTimer()
   cachedData.timer = setTimeout(overTimeCheck, delay)
+}
+
+/**
+ * 停表，并把计时锚点推到当前时刻。
+ *
+ * 锚点必须跟着停表一起推进：overTimeCheck 是按 `now - lastTime` 扣真实时间的，
+ * 只清定时器不改 lastTime 的话，停表期间那段间隔会在下次起表时被一次性扣掉
+ * （锁屏 10 分钟 = 白扣 10 分钟可用时长），与「可用状态下锁屏则停止计时」相悖。
+ */
+const pauseTimer = (): void => {
+  clearTimer()
+  userTiming.lastTime = Date.now()
+}
+
+/** 重新起表：先丢弃停表期间的间隔，再立刻走一次检查并续期 */
+const resumeTiming = (): void => {
+  userTiming.lastTime = Date.now()
+  clearTimer()
+  overTimeCheck()
 }
 
 // This method will be called when Electron has finished
@@ -116,21 +155,16 @@ app.whenReady().then(() => {
     optimizer.watchWindowShortcuts(window)
   })
 
+  // 首轮起表前把锚点推到当前：从模块加载到 app ready 之间的耗时
+  // （portable 版解压可达约 9 秒）不该算进孩子的可用时长
+  userTiming.lastTime = Date.now()
   overTimeCheck()
 
-  // IPC：user:list 必须用 handle/invoke 这一对。
-  // ipcMain.on + event.reply 只能「再发一条消息」，on 回调里的 return 会被 Electron 丢弃；
-  // 渲染进程 await ipcRenderer.invoke('user:list') 才能拿到这里的返回值（Promise）。
-  // 若这里 throw，渲染进程的 invoke 会以 rejection 形式抛出，可直接 try/catch。
   ipcMain.handle('user:list', async (): Promise<UserInfo[]> => {
     // 迭代一暂不实现 store.get()，直接返回默认值。
     return []
   })
 
-  // 第一个参数是 IpcMainInvokeEvent，这里用不到；必须写出来占位才能拿到第二个参数 payload。
-  // 加下划线前缀是 TS 的约定：noUnusedParameters 会跳过以 `_` 开头的形参，否则报 TS6133。
-  // ESLint 侧靠 eslint.config.mjs 里的 argsIgnorePattern: '^_' 放行，两边约定保持一致。
-  // payload 目前也用不到（store.set 落库还没接），故同样加前缀；接通后去掉下划线即可。
   ipcMain.handle('user:data', async (_event, _payload) => {})
 
   // 迭代一暂不实现客户端窗口
@@ -142,25 +176,50 @@ app.whenReady().then(() => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
 
-  // 锁屏/解锁监听器只在 app ready 时注册一次，绝不要把 powerMonitor.on(...) 写进
-  // 会被反复调用的函数里（或在事件回调里再 on()），否则监听器会累积：
-  // 一次锁屏/解锁会触发 N 个回调（打印 N 次、overTimeCheck 被启动 N 次）。
-  // 注意 Node 的 EventEmitter 在 emit 时会先复制监听器数组，回调里再 removeAllListeners
-  // 也拦不住本次 emit 的其余回调，所以「先摘后挂」的写法在这里同样不可靠。
   powerMonitor.on('lock-screen', () => {
+    if (cachedData.isLocked) {
+      return
+    }
+    cachedData.isLocked = true
+    // 只有可用状态才停表：强制休息期间屏幕本来就是锁着的，休息倒计时必须继续走，
+    // 否则孩子一锁屏就能把休息时间「冻住」
     if (userTiming.status === StatusEnum.available) {
-      clearTimer()
+      pauseTimer()
     }
   })
 
+  // unlock-screen 必须在顶层注册、且只注册一次。历史版本把它写在 lock-screen 回调内部，
+  // 每锁一次屏就多挂一个监听器，十几轮锁/解锁后就超过 EventEmitter 默认上限 10 个，
+  // 报 MaxListenersExceededWarning 并持续泄漏。
   powerMonitor.on('unlock-screen', () => {
-    console.log('unlock-screen')
-    clearTimer()
-    overTimeCheck()
+    if (!cachedData.isLocked) {
+      return
+    }
+    cachedData.isLocked = false
+    if (userTiming.status === StatusEnum.disabled) {
+      // 休息没结束就想用电脑 -> 立刻锁回去
+      lockScreen()
+    } else {
+      resumeTiming()
+    }
   })
 
   powerMonitor.on('suspend', () => {
     console.log('开始休眠')
+    // 睡眠期间定时器不触发，改成按真实时间扣减后，不显式停表就会把整段睡眠算成已用时长
+    pauseTimer()
+  })
+
+  powerMonitor.on('resume', () => {
+    console.log('休眠结束')
+    // 醒来先丢弃睡眠这段时间，再决定要不要起表
+    userTiming.lastTime = Date.now()
+    // 可用状态下锁屏期间本该停表，醒来也要保持停表，等解锁再起
+    if (cachedData.isLocked && userTiming.status === StatusEnum.available) {
+      clearTimer()
+      return
+    }
+    resumeTiming()
   })
 })
 
