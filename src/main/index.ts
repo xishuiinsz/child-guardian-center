@@ -93,9 +93,7 @@ const overTimeCheck = (): void => {
   userTiming.countdown -= Math.max(0, now - userTiming.lastTime)
   userTiming.lastTime = now
 
-  // 显示层取整，内部仍按毫秒精确记账：把 countdown 本身取整存回去，等于把定时器漂移又放回来。
-  // 用 ceil 而不是 round/floor —— 还剩 0.3s 时显示 1，不会出现「显示 0 秒却还能用」的矛盾。
-  console.log('userTiming: ', userTiming.status, Math.ceil(userTiming.countdown / 1000))
+  console.log('userTiming: ', userTiming.status, userTiming.countdown / 1000)
 
   if (userTiming.countdown <= 0) {
     if (userTiming.status === StatusEnum.available) {
@@ -111,6 +109,16 @@ const overTimeCheck = (): void => {
         status: StatusEnum.available,
         countdown: durationConfigInit.allowedDuration
       })
+
+      // 唯一的例外：孩子休息期间就走开了，屏幕还锁着。
+      // 休息是在 disabled 状态下锁的屏，lock-screen 回调当时不会停表（停了休息就永远结束不了），
+      // 所以切回 available 这一刻必须补一次判断，否则「可用 + 锁屏 = 停止计时」的不变式被打破：
+      // 刚拿回来的额度会在没人用电脑的时候白白烧掉，甚至烧到又触发下一轮强制休息。
+      // 这里停表，等 unlock-screen 回调里的 resumeTiming() 再起。
+      if (cachedData.isLocked) {
+        pauseTimer()
+        return
+      }
     }
   } else {
     if (userTiming.status === StatusEnum.disabled) {
@@ -195,13 +203,16 @@ app.whenReady().then(() => {
     if (!cachedData.isLocked) {
       return
     }
+    // 顺序不能反：先把锁屏标记清掉，再走检查。
+    // 否则 overTimeCheck 里「休息结束但屏幕还锁着就停表」那条分支会误判成仍在锁屏，白白停一次表。
     cachedData.isLocked = false
-    if (userTiming.status === StatusEnum.disabled) {
-      // 休息没结束就想用电脑 -> 立刻锁回去
-      lockScreen()
-    } else {
-      resumeTiming()
-    }
+    // 解锁一律重新调用 overTimeCheck 结算（resumeTiming 内部就是「丢弃锁屏间隔 + overTimeCheck」），
+    // 由它决定接下来干什么，回调里不再自己判状态：
+    // - 休息已结束 -> 切回 available，正常起表，孩子接着用；
+    // - 休息没结束 -> overTimeCheck 的 disabled 分支会立刻 lockScreen() 锁回去。
+    // 旧写法在这里直接按「解锁那一刻的 status」决定要不要锁回去，休息刚好在这一拍结束时会多锁一次，
+    // 孩子得再解一遍锁才能用上电脑。
+    resumeTiming()
   })
 
   powerMonitor.on('suspend', () => {
