@@ -13,6 +13,14 @@ export const durationConfigInit = {
   disabledTimes: 2
 }
 
+export const storeSet = (countdown: string, status: string): void => {
+  try {
+    store.set(countdown, status)
+  } catch (error) {
+    console.error('Error writing to userConfig.json:', error)
+  }
+}
+
 try {
   const data = store.store
   if (data) {

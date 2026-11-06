@@ -1,6 +1,6 @@
 import { electronApp, is, optimizer } from '@electron-toolkit/utils'
 import type { UserInfo } from '@preload/ipc'
-import { delay, durationConfigInit } from '@utils/const'
+import { delay, durationConfigInit, storeSet } from '@utils/const'
 import type { UserTiming } from '@utils/index'
 import { lockScreen, StatusEnum } from '@utils/index'
 import { app, BrowserWindow, ipcMain, powerMonitor, shell } from 'electron'
@@ -125,7 +125,7 @@ const overTimeCheck = (): void => {
       lockScreen()
     }
   }
-
+  storeSet(String(userTiming.countdown), userTiming.status)
   clearTimer()
   cachedData.timer = setTimeout(overTimeCheck, delay)
 }
