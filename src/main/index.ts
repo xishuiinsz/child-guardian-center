@@ -152,12 +152,7 @@ app.whenReady().then(() => {
     cachedData.polling = false
     cachedData.lockEventFlag = true
     let unLockEventFlag = false
-    // 只有可用状态才停表：强制休息期间屏幕本来就是锁着的，休息倒计时必须继续走，
-    // 否则孩子一锁屏就能把休息时间「冻住」。
-    // 锁屏这件事本身不需要记下来 —— 停表就是它对计时系统的全部影响，当场做完即可。
-    // if (userTiming.status === StatusEnum.available) {
-    //   pauseTimer()
-    // }
+    powerMonitor.removeAllListeners('unlock-screen')
     powerMonitor.on('unlock-screen', () => {
       if (unLockEventFlag) {
         return
