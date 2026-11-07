@@ -14,6 +14,48 @@
   - 编写overTimeCheck函数，处理锁屏、定时器、更新状态等
   - 监听锁屏事件，在回调中停止定时器
   - 监听解锁事件，在回调中重新调用overTimeCheck
+
+- 设计分析：
+  - 计时模型是「墙上时钟差值」，不是「定时器累加」：`setTimeout` 只作 1 秒节拍（`delay`）触发，
+    每拍都按 `countdown -= Math.max(0, Date.now() - lastTime)` 扣真实流逝时间。
+    `setTimeout` 本身不保证精度，用固定 `delay` 扣减会被抖动/漏拍累积成误差，用差值扣减则不会。
+    `Math.max` 兜住系统时钟回拨，回拨时这一拍不扣、而不是倒加时长。
+  - 停表 / 起表以 `status`（available / disabled）为准，锁屏只决定「可用状态下要不要停表」：
+    - 可用 + 锁屏 → `pauseTimer()`：清定时器**并把 `lastTime` 推到当前**，丢弃锁屏这段间隔。
+      只清定时器不改 `lastTime` 的话，下次起表会把停表期间一次性倒扣（锁屏 10 分钟 = 白扣 10 分钟）。
+    - 强制休息 + 锁屏 → **继续计时**，且每拍重复调用 `lockScreen()`。
+      休息期间屏幕本来就是锁着的，此时停表等于让孩子一锁屏就把休息时间「冻住」。
+    - 强制休息在锁屏中自然结束 → 切回 available 那一刻补一次 `pauseTimer()`，等解锁再起表，
+      否则刚拿回来的额度会在没人用电脑的时候白白烧掉，甚至烧到触发下一轮休息。
+    - 首轮起表前先把 `lastTime` 推到 app ready：模块加载到 ready 之间的耗时
+      （portable 版解压可达约 9 秒）不该算进孩子的可用时长。
+  - **不保存锁屏状态**：`cachedData` 里只有去重用的 `lastSessionEvent`，没有「屏幕是否锁着」字段。
+    锁屏状态只在事件到达的那一刻有用，当场消费完就丢：
+    - `lock-screen` → 若 `status === available` 就 `pauseTimer()`。停表就是锁屏对计时系统的全部影响。
+    - `unlock-screen` → `resumeTiming(true)`，把「孩子在电脑前」直接透传进 `overTimeCheck`。
+    - `overTimeCheck(present)` 只在「强制休息结束 → 切回 available」这一个分支读 `present`：
+      不在场就停表等解锁，否则刚发下来的额度会在没人用时白白烧掉、甚至烧到又触发下一轮休息。
+      定时器 tick 一律传 `false` —— tick 能走进那个分支说明当时是 disabled，而休息期间的屏幕
+      是本项目自己锁的且每拍重锁，孩子必然不在场；available 状态下走不到这个分支，故不影响正常计时。
+    - 沿革：最早用单个 `isLocked` 兼「去重标志」与「锁屏状态源」两职；先拆成
+      `screenLocked` + `lastSessionEvent`，再把锁屏状态改成 `overTimeCheck(present)` 的调用点断言，
+      `screenLocked` 随之删除。顺带消掉一条隐式契约 —— 旧版 unlock 回调必须「先清状态再走检查」，
+      顺序写反就会白白停一次表；现在没有共享状态，也就没有顺序陷阱。
+  - `cachedData.lastSessionEvent` 只服务于去重，不参与任何计时判断。
+    锁屏 / 解锁事件可能瞬时连发两次，`acceptSessionEvent(type)` 用「上一次处理的事件类型 + 时间戳」
+    判重：同类型且间隔小于 `SESSION_EVENT_DEDUP_MS`（500ms）就丢弃，避免同一次锁屏被结算两遍
+    （重复 `pauseTimer()` / `resumeTiming()` 会反复重置 `lastTime`，也会多跑一次 `lockScreen()`）。
+    类型不同则照常放行，所以 lock → unlock → lock 这种真实交替不会被误挡。
+  - 解锁统一走 `resumeTiming(true)`（重置 `lastTime` → `clearTimer()` → `overTimeCheck(true)`），
+    由 `overTimeCheck` 决定接下来是继续用、还是 `disabled` 分支立刻锁回去，回调自身不判状态。
+    旧写法按「解锁那一刻的 status」决定要不要锁回去，休息刚好在这一拍结束时会多锁一次。
+  - `suspend` / `resume`：睡眠期间定时器不触发，`suspend` 里显式 `pauseTimer()`，
+    否则整段睡眠会被算成已用时长。`resume` 唤醒后一律 `resumeTiming(true)` ——
+    因为不保存锁屏状态，唤醒时无从得知屏幕锁没锁，取舍见下方「已知限制」。
+  - 定时器只在 `overTimeCheck` 末尾排一次，且排之前先 `clearTimer`：
+    任何路径重复调用本函数都不会叠出两个定时器。历史上「休息结束切回 available 后不再续期」
+    的写法会导致第一轮跑完后计时永久停摆，孩子此后可以无限期使用电脑。
+  
 - 打包要求:
   - 在package.json文件中新建一个install命令，功能如下
     - 生成单一的.exe文件
@@ -134,3 +176,13 @@ $ npm run uninstall:app
   计划任务的「停止」只会杀掉外壳 stub，脚本里已用 `Stop-Process` 兜底清理残留进程。
 - **孩子仍可在任务管理器里结束进程**（标准用户无权改任务本身，但能结束自己的进程）。
   脚本已配置失败自动重启 3 次；要真正防篡改需要改成 Windows 服务或加进程保护，属后续迭代。
+- **唤醒后可能白烧额度（方案 3 的已知取舍）**：本项目不保存锁屏状态，`resume` 回调无从得知
+  屏幕是锁着还是开着，一律按「孩子在电脑前」处理并 `resumeTiming(true)`。
+  若睡眠前屏幕是锁着的、且系统未配置「唤醒时需要登录」，那么从唤醒到孩子真正解锁的这段时间
+  会被算进可用时长 —— 孩子回来时可能发现额度变少，甚至正好落在强制休息里被再锁一次。
+  Modern Standby 机器会周期性自动唤醒，会放大这个窗口。
+  之所以不选「唤醒后保持停表、等解锁再起」：那种做法在「睡眠前屏幕是开着的」场景下永远等不到
+  `unlock-screen` 事件，计时会永久停摆（对孩子等于无限时长，管控彻底失效）。
+  两边都 fail-open 时选失控窗口小的那个。彻底解决需要持久化 + 权威锁屏状态查询，属后续迭代。
+  缓解办法（不改代码）：把 Windows「登录选项 → 需要登录」设为「始终」，
+  这样唤醒必然经过一次解锁，`unlock-screen` 会重新校准计时。

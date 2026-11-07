@@ -9,14 +9,32 @@ import { join } from 'path'
 import icon from '../../resources/icon.png?asset'
 
 const { username } = os.userInfo()
-console.log(username) // Kai Zhang（Windows 登录账户名）
+console.log(`当前登录用户：${username}`)
 
+type SessionEventType = 'lock' | 'unlock'
+
+/**
+ * 同一类会话事件在这个时间窗内重复到达就丢弃。
+ * Windows 上锁屏 / 解锁事件可能瞬时连发两次，不去重会让同一次锁屏被结算两遍。
+ */
+const SESSION_EVENT_DEDUP_MS = 500
+
+/**
+ * 注意：这里刻意**不保存**「屏幕是否锁着」。
+ * 锁屏状态只在事件到达的那一刻有用，用完即弃 —— lock-screen 当场决定要不要停表，
+ * unlock-screen 当场调 resumeTiming(true)。一旦存成字段，它就变成一份可能过期、
+ * 又被多处读取的隐式全局状态（旧版本的 isLocked 就是这样兼了去重和锁屏状态两职）。
+ * 唯一无法回避「事后还要知道锁没锁」的场景是 resume（唤醒），取舍见该回调注释。
+ */
 const cachedData: {
-  isLocked: boolean
+  /** 上一次已处理的会话事件，只服务于去重，不参与任何计时判断 */
+  lastSessionEvent: { type: SessionEventType; at: number } | null
+  lockEventFlag: boolean
   timer: null | NodeJS.Timeout
   mainWindow: BrowserWindow | null
 } = {
-  isLocked: false,
+  lastSessionEvent: null,
+  lockEventFlag: false,
   timer: null,
   mainWindow: null
 }
@@ -79,6 +97,15 @@ const clearTimer = (): void => {
 /**
  * 计时主循环：按真实流逝时间扣减 -> 到点切状态 / 锁屏 -> 无条件续期。
  *
+ * @param present 孩子此刻是否在电脑前（屏幕未锁）。**只在「强制休息结束 -> 切回 available」
+ *   这一个分支被读**：不在场就必须停表，否则刚发下来的额度会在没人用的时候白白烧掉，
+ *   甚至烧到又触发下一轮强制休息。各调用点的取值依据：
+ *   - 定时器 tick -> `false`。tick 能走进那个分支说明当时是 disabled，
+ *     而休息期间的屏幕是本项目自己锁的（且每拍重锁一次），孩子必然不在场。
+ *     注意 tick 传 false 不影响正常计时：available 状态下走不到读 present 的那个分支。
+ *   - unlock-screen -> `true`，解锁事件就是「孩子在电脑前」的唯一可靠证据。
+ *   - app ready / resume -> `true`，理由见各自调用点注释。
+ *
  * 三个不能改的点：
  * 1. 扣减用 `now - lastTime` 而不是固定的 `delay`。setTimeout 本身不保证精度，
  *    而且定时器在系统睡眠期间不触发，固定扣减会让孩子靠「让机器睡一会儿」把可用时长拖长。
@@ -87,13 +114,13 @@ const clearTimer = (): void => {
  *    计时永久停摆，孩子此后可以无限期使用电脑。
  * 3. 排定时器前先 clearTimer：这样任何路径重复调用本函数都不会叠出两个定时器。
  */
-const overTimeCheck = (): void => {
+const overTimeCheck = (present: boolean): void => {
   const now = Date.now()
   // Math.max 兜住系统时钟回拨（NTP 校时 / 夏令时），回拨时这一拍不扣而不是倒加时长
   userTiming.countdown -= Math.max(0, now - userTiming.lastTime)
   userTiming.lastTime = now
 
-  console.log('userTiming: ', userTiming.status, userTiming.countdown / 1000)
+  console.log(`${userTiming.status}：${userTiming.countdown / 1000} 秒 `)
 
   if (userTiming.countdown <= 0) {
     if (userTiming.status === StatusEnum.available) {
@@ -114,8 +141,8 @@ const overTimeCheck = (): void => {
       // 休息是在 disabled 状态下锁的屏，lock-screen 回调当时不会停表（停了休息就永远结束不了），
       // 所以切回 available 这一刻必须补一次判断，否则「可用 + 锁屏 = 停止计时」的不变式被打破：
       // 刚拿回来的额度会在没人用电脑的时候白白烧掉，甚至烧到又触发下一轮强制休息。
-      // 这里停表，等 unlock-screen 回调里的 resumeTiming() 再起。
-      if (cachedData.isLocked) {
+      // 这里停表，等 unlock-screen 回调里的 resumeTiming(true) 再起。
+      if (!present) {
         pauseTimer()
         return
       }
@@ -127,7 +154,8 @@ const overTimeCheck = (): void => {
   }
   storeSet(String(userTiming.countdown), userTiming.status)
   clearTimer()
-  cachedData.timer = setTimeout(overTimeCheck, delay)
+  // 定时器 tick 一律按「孩子不在场」传参，理由见 overTimeCheck 的 @param present 说明
+  cachedData.timer = setTimeout(() => overTimeCheck(false), delay)
 }
 
 /**
@@ -142,11 +170,11 @@ const pauseTimer = (): void => {
   userTiming.lastTime = Date.now()
 }
 
-/** 重新起表：先丢弃停表期间的间隔，再立刻走一次检查并续期 */
-const resumeTiming = (): void => {
+/** 重新起表：先丢弃停表期间的间隔，再立刻走一次检查并续期。present 原样透传给 overTimeCheck */
+const resumeTiming = (present: boolean): void => {
   userTiming.lastTime = Date.now()
   clearTimer()
-  overTimeCheck()
+  overTimeCheck(present)
 }
 
 // This method will be called when Electron has finished
@@ -166,7 +194,8 @@ app.whenReady().then(() => {
   // 首轮起表前把锚点推到当前：从模块加载到 app ready 之间的耗时
   // （portable 版解压可达约 9 秒）不该算进孩子的可用时长
   userTiming.lastTime = Date.now()
-  overTimeCheck()
+  // present = true：计划任务在用户登录时启动，此刻屏幕必然是解锁的
+  overTimeCheck(true)
 
   ipcMain.handle('user:list', async (): Promise<UserInfo[]> => {
     // 迭代一暂不实现 store.get()，直接返回默认值。
@@ -185,34 +214,26 @@ app.whenReady().then(() => {
   })
 
   powerMonitor.on('lock-screen', () => {
-    if (cachedData.isLocked) {
+    if (cachedData.lockEventFlag) {
       return
     }
-    cachedData.isLocked = true
+    console.log('锁屏')
+    cachedData.lockEventFlag = true
+    let unLockEventFlag = false
     // 只有可用状态才停表：强制休息期间屏幕本来就是锁着的，休息倒计时必须继续走，
-    // 否则孩子一锁屏就能把休息时间「冻住」
+    // 否则孩子一锁屏就能把休息时间「冻住」。
+    // 锁屏这件事本身不需要记下来 —— 停表就是它对计时系统的全部影响，当场做完即可。
     if (userTiming.status === StatusEnum.available) {
       pauseTimer()
     }
-  })
-
-  // unlock-screen 必须在顶层注册、且只注册一次。历史版本把它写在 lock-screen 回调内部，
-  // 每锁一次屏就多挂一个监听器，十几轮锁/解锁后就超过 EventEmitter 默认上限 10 个，
-  // 报 MaxListenersExceededWarning 并持续泄漏。
-  powerMonitor.on('unlock-screen', () => {
-    if (!cachedData.isLocked) {
-      return
-    }
-    // 顺序不能反：先把锁屏标记清掉，再走检查。
-    // 否则 overTimeCheck 里「休息结束但屏幕还锁着就停表」那条分支会误判成仍在锁屏，白白停一次表。
-    cachedData.isLocked = false
-    // 解锁一律重新调用 overTimeCheck 结算（resumeTiming 内部就是「丢弃锁屏间隔 + overTimeCheck」），
-    // 由它决定接下来干什么，回调里不再自己判状态：
-    // - 休息已结束 -> 切回 available，正常起表，孩子接着用；
-    // - 休息没结束 -> overTimeCheck 的 disabled 分支会立刻 lockScreen() 锁回去。
-    // 旧写法在这里直接按「解锁那一刻的 status」决定要不要锁回去，休息刚好在这一拍结束时会多锁一次，
-    // 孩子得再解一遍锁才能用上电脑。
-    resumeTiming()
+    powerMonitor.on('unlock-screen', () => {
+      if (unLockEventFlag) {
+        return
+      }
+      console.log('解锁')
+      unLockEventFlag = true
+      resumeTiming(true)
+    })
   })
 
   powerMonitor.on('suspend', () => {
@@ -223,14 +244,18 @@ app.whenReady().then(() => {
 
   powerMonitor.on('resume', () => {
     console.log('休眠结束')
-    // 醒来先丢弃睡眠这段时间，再决定要不要起表
+    // 醒来先丢弃睡眠这段时间，再起表
     userTiming.lastTime = Date.now()
-    // 可用状态下锁屏期间本该停表，醒来也要保持停表，等解锁再起
-    if (cachedData.isLocked && userTiming.status === StatusEnum.available) {
-      clearTimer()
-      return
-    }
-    resumeTiming()
+    // 本项目不保存锁屏状态字段，唤醒时无从得知屏幕是锁着还是开着，一律按「孩子在电脑前」处理。
+    //
+    // 已知代价（评估后接受）：若睡眠前屏幕是锁着的、且系统未配置「唤醒时需要登录」，
+    // 唤醒后计时会在没人用的情况下继续走 —— 孩子回来时可能发现额度已被烧掉，
+    // 甚至正好落在强制休息里被再锁一次。Modern Standby 机器会周期性自动唤醒，会放大这个窗口。
+    //
+    // 为什么不选「唤醒后保持停表、等解锁再起」：那种做法在「睡眠前屏幕是开着的」场景下
+    // 永远等不到 unlock-screen 事件，计时会永久停摆 —— 对孩子等于无限时长，属于管控彻底失效，
+    // 比多烧一点额度严重得多。两边都 fail-open 时，选失控窗口小的那个。
+    resumeTiming(true)
   })
 })
 
