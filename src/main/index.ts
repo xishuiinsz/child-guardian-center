@@ -11,19 +11,12 @@ import icon from '../../resources/icon.png?asset'
 const { username } = os.userInfo()
 console.log(`当前登录用户：${username}`)
 
-/**
- * 注意：这里刻意**不保存**「屏幕是否锁着」。
- * 锁屏状态只在事件到达的那一刻有用，用完即弃 —— lock-screen 当场决定要不要停表，
- * unlock-screen 当场调 resumeTiming(true)。一旦存成字段，它就变成一份可能过期、
- * 又被多处读取的隐式全局状态（旧版本的 isLocked 就是这样兼了去重和锁屏状态两职）。
- * 唯一无法回避「事后还要知道锁没锁」的场景是 resume（唤醒），取舍见该回调注释。
- */
 const cachedData: {
-  lockEventFlag: boolean
+  isLockScreen: boolean
   polling: boolean
   mainWindow: BrowserWindow | null
 } = {
-  lockEventFlag: false,
+  isLockScreen: false,
   polling: true,
   mainWindow: null
 }
@@ -79,7 +72,6 @@ const userTiming: UserTiming = getInitUserTiming()
 const overTimeCheck = (): void => {
   const now = Date.now()
   const diffTime = now - userTiming.lastTime
-  // Math.max 兜住系统时钟回拨（NTP 校时 / 夏令时），回拨时这一拍不扣而不是倒加时长
   userTiming.countdown -= Math.abs(diffTime)
   userTiming.lastTime = now
 
@@ -87,6 +79,9 @@ const overTimeCheck = (): void => {
 
   if (userTiming.countdown > 0) {
     if (userTiming.status === StatusEnum.disabled) {
+      if (!cachedData.isLockScreen) {
+        return
+      }
       lockScreen()
       return
     }
@@ -145,12 +140,12 @@ app.whenReady().then(() => {
   })
 
   powerMonitor.on('lock-screen', () => {
-    if (cachedData.lockEventFlag) {
+    if (cachedData.isLockScreen) {
       return
     }
     console.log('锁屏')
     cachedData.polling = false
-    cachedData.lockEventFlag = true
+    cachedData.isLockScreen = true
     let unLockEventFlag = false
     powerMonitor.removeAllListeners('unlock-screen')
     powerMonitor.on('unlock-screen', () => {
@@ -159,7 +154,7 @@ app.whenReady().then(() => {
       }
       console.log('解锁')
       unLockEventFlag = true
-      cachedData.lockEventFlag = false
+      cachedData.isLockScreen = false
       cachedData.polling = true
       overTimeCheck()
     })
