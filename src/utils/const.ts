@@ -8,6 +8,8 @@ const store = new Store({
 
 export const timeRate = 60 * 1000 // 1分钟的毫秒数;
 
+export const tipTime = 2 * 60 // 剩余2分钟时提示
+
 export const durationConfigInit = {
   allowedDuration: 2 * timeRate,
   disabledTimes: 2

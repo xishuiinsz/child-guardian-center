@@ -1,12 +1,13 @@
 import { electronApp, is, optimizer } from '@electron-toolkit/utils'
 import type { UserInfo } from '@preload/ipc'
-import { delay, durationConfigInit, storeSet } from '@utils/const'
+import { delay, durationConfigInit, storeSet, timeRate, tipTime } from '@utils/const'
 import type { UserTiming } from '@utils/index'
 import { lockScreen, StatusEnum } from '@utils/index'
 import { app, BrowserWindow, ipcMain, powerMonitor, shell } from 'electron'
 import os from 'node:os'
 import { join } from 'path'
 import icon from '../../resources/icon.png?asset'
+import { showMessageBox } from '@utils/dialog'
 
 const { username } = os.userInfo()
 console.log(`当前登录用户：${username}`)
@@ -77,23 +78,25 @@ const overTimeCheck = (): void => {
 
   console.log(`${userTiming.status}: ${userTiming.countdown / 1000} 秒 `)
 
-  if (userTiming.countdown > 0) {
-    if (userTiming.status === StatusEnum.disabled) {
-      if (!cachedData.isLockScreen) {
-        return
+  if (userTiming.countdown >= 0) {
+    if (userTiming.status === StatusEnum.available) {
+      if (parseInt(String(userTiming.countdown / 1000)) === tipTime) {
+        showMessageBox()
       }
+    }
+    if (userTiming.status === StatusEnum.disabled && !cachedData.isLockScreen) {
       lockScreen()
       return
     }
   } else {
     if (userTiming.status === StatusEnum.available) {
-      // 可用时长耗尽 -> 进入强制休息，休息时长 = 可用时长 * 禁用倍数
       Object.assign(userTiming, {
         status: StatusEnum.disabled,
         countdown: durationConfigInit.allowedDuration * durationConfigInit.disabledTimes
       })
+      overTimeCheck()
+      return
     } else {
-      // 强制休息结束 -> 回到可用状态，开启下一轮循环（这里绝不能停表）
       Object.assign(userTiming, {
         status: StatusEnum.available,
         countdown: durationConfigInit.allowedDuration
@@ -101,7 +104,6 @@ const overTimeCheck = (): void => {
     }
   }
   storeSet(String(userTiming.countdown), userTiming.status)
-  // 定时器 tick 一律按「孩子不在场」传参，理由见 overTimeCheck 的 @param present 说明
   if (cachedData.polling) {
     setTimeout(overTimeCheck, delay)
   }
